@@ -43,9 +43,13 @@ jobs:
       - name: Smoke test
         shell: pwsh
         run: |
-          $out = & dist\JamLauncher-${{ matrix.arch }}.exe help
-          if ($LASTEXITCODE -ne 2) { Write-Error "Unerwarteter Exit-Code $LASTEXITCODE"; exit 1 }
+          $out = & dist\JamLauncher-${{ matrix.arch }}.exe help 2>&1 | Out-String
           Write-Host $out
+          if ($LASTEXITCODE -ne 0 -or $out -notmatch "JamLauncher.exe download") {
+            Write-Host "::error::Smoke test fehlgeschlagen (Exit-Code $LASTEXITCODE)"
+            exit 1
+          }
+          exit 0
 
       - uses: actions/upload-artifact@v4
         with:

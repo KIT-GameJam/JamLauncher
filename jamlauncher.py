@@ -264,7 +264,7 @@ def main():
     if cmd == "clean":
         return cmd_clean(force="--yes" in rest or "-y" in rest)
     print(__doc__)
-    return 2
+    return 0 if cmd in ("help", "--help", "-h") else 2
 
 
 if __name__ == "__main__":
