@@ -1,0 +1,76 @@
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: windows-latest
+          - arch: arm64
+            runner: windows-11-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          architecture: ${{ matrix.arch }}
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip pyinstaller itch-dl
+
+      - name: Build JamLauncher.exe
+        run: >
+          python -m PyInstaller --noconfirm --clean --onefile --console
+          --name JamLauncher-${{ matrix.arch }}
+          --collect-all itch_dl --hidden-import itch_dl.cli
+          jamlauncher.py
+
+      - name: Smoke test
+        shell: pwsh
+        run: |
+          $out = & dist\JamLauncher-${{ matrix.arch }}.exe help
+          if ($LASTEXITCODE -ne 2) { Write-Error "Unerwarteter Exit-Code $LASTEXITCODE"; exit 1 }
+          Write-Host $out
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: JamLauncher-${{ matrix.arch }}
+          path: dist/JamLauncher-${{ matrix.arch }}.exe
+          if-no-files-found: error
+
+  release:
+    name: GitHub Release
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/JamLauncher-*.exe
+          generate_release_notes: true
+          body: |
+            **Download:** `JamLauncher-x64.exe` für normale Windows-PCs, `JamLauncher-arm64.exe` für Windows on ARM
+            (z.B. Surface Pro X / Snapdragon-Laptops).
+
+            Die .exe in einen leeren Ordner kopieren und doppelklicken. SmartScreen warnt beim ersten Start
+            vor der unsignierten Datei: „Weitere Informationen“ → „Trotzdem ausführen“.
