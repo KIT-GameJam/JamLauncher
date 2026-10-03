@@ -12,7 +12,7 @@ Lädt alle Einträge einer itch.io-Jam, bereitet Windows- und Web-Builds auf und
 1. **Herunterladen** – `download.bat` doppelklicken (fragt Jam-URL, API-Key und Anzahl paralleler Downloads ab), oder direkt:
    `itch-dl https://itch.io/jam/<slug> --api-key <KEY> --download-to downloads --parallel 4`
    Falls `--download-to` bei deiner Version anders heißt: `itch-dl --help`.
-2. **Aufbereiten** – `python prepare.py --input downloads --output games`
+2. **Aufbereiten** – `prepare.bat` doppelklicken, oder direkt `python prepare.py --input downloads --output games`
    Entpackt Zips, findet .exe / index.html, entfernt Mark of the Web, schreibt `games/games.json`.
    Der Jam-Name im Launcher kommt aus `downloads/jam.txt` (legt `download.bat` an) bzw. von der Jam-Seite;
    manuell überschreiben mit `--jam-title "Mein Jam"`. Bei direktem `itch-dl`-Aufruf die Jam-URL selbst in `downloads/jam.txt` schreiben.
