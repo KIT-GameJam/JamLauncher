@@ -18,6 +18,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 import webbrowser
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -60,6 +61,125 @@ def public_games():
     return out
 
 
+def _descendant_pids(root_pid: int) -> set:
+    """root_pid plus alle Kindprozesse (manche Spiele starten über einen Launcher-Prozess)."""
+    pids = {root_pid}
+    if os.name != "nt":
+        return pids
+    import ctypes
+    from ctypes import wintypes
+
+    class PROCESSENTRY32(ctypes.Structure):
+        _fields_ = [
+            ("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+            ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+            ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+            ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", wintypes.LONG),
+            ("dwFlags", wintypes.DWORD), ("szExeFile", ctypes.c_char * 260),
+        ]
+
+    k32 = ctypes.windll.kernel32
+    snap = k32.CreateToolhelp32Snapshot(0x2, 0)  # TH32CS_SNAPPROCESS
+    if snap == ctypes.c_void_p(-1).value:
+        return pids
+    try:
+        parent_of = {}
+        pe = PROCESSENTRY32()
+        pe.dwSize = ctypes.sizeof(PROCESSENTRY32)
+        ok = k32.Process32First(snap, ctypes.byref(pe))
+        while ok:
+            parent_of[pe.th32ProcessID] = pe.th32ParentProcessID
+            ok = k32.Process32Next(snap, ctypes.byref(pe))
+    finally:
+        k32.CloseHandle(snap)
+    changed = True
+    while changed:
+        changed = False
+        for pid, ppid in parent_of.items():
+            if ppid in pids and pid not in pids:
+                pids.add(pid)
+                changed = True
+    return pids
+
+
+def bring_to_front(proc: subprocess.Popen, timeout: float = 25.0) -> None:
+    """Wartet auf das Hauptfenster des Spiels und holt es vor den (Kiosk-)Browser.
+
+    Windows blockiert SetForegroundWindow aus Hintergrundprozessen; deshalb wird der
+    Eingabe-Thread des aktuellen Vordergrundfensters kurz angehängt und ein Alt-Tastendruck
+    simuliert, was die Sperre aufhebt.
+    """
+    if os.name != "nt":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
+
+    def find_window(pids: set):
+        found = []
+
+        def cb(hwnd, _):
+            if not user32.IsWindowVisible(hwnd) or user32.GetWindow(hwnd, 4):  # GW_OWNER
+                return True
+            pid = wintypes.DWORD()
+            user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            if pid.value in pids:
+                rect = wintypes.RECT()
+                user32.GetWindowRect(hwnd, ctypes.byref(rect))
+                if rect.right - rect.left > 50 and rect.bottom - rect.top > 50:
+                    found.append(hwnd)
+            return True
+
+        user32.EnumWindows(EnumWindowsProc(cb), 0)
+        return found[0] if found else None
+
+    def force_foreground(hwnd):
+        fg = user32.GetForegroundWindow()
+        fg_thread = user32.GetWindowThreadProcessId(fg, None) if fg else 0
+        my_thread = kernel32.GetCurrentThreadId()
+        target_thread = user32.GetWindowThreadProcessId(hwnd, None)
+        if fg_thread and fg_thread != my_thread:
+            user32.AttachThreadInput(my_thread, fg_thread, True)
+        if target_thread != my_thread:
+            user32.AttachThreadInput(my_thread, target_thread, True)
+        try:
+            user32.keybd_event(0x12, 0, 0, 0)       # Alt drücken …
+            user32.keybd_event(0x12, 0, 2, 0)       # … und loslassen (KEYEVENTF_KEYUP)
+            if user32.IsIconic(hwnd):
+                user32.ShowWindow(hwnd, 9)          # SW_RESTORE
+            user32.BringWindowToTop(hwnd)
+            user32.SetForegroundWindow(hwnd)
+            user32.SwitchToThisWindow(hwnd, True)
+            user32.SetActiveWindow(hwnd)
+        finally:
+            if fg_thread and fg_thread != my_thread:
+                user32.AttachThreadInput(my_thread, fg_thread, False)
+            if target_thread != my_thread:
+                user32.AttachThreadInput(my_thread, target_thread, False)
+
+    deadline = time.time() + timeout
+    last_hwnd = None
+    hits = 0
+    while time.time() < deadline and proc.poll() is None:
+        hwnd = find_window(_descendant_pids(proc.pid))
+        if hwnd:
+            if user32.GetForegroundWindow() != hwnd:
+                force_foreground(hwnd)
+            # Splash-Screens (Unity, Godot) werden durch das echte Fenster ersetzt – daher
+            # nach dem ersten Treffer noch ein paar Sekunden weiter beobachten.
+            if hwnd == last_hwnd and user32.GetForegroundWindow() == hwnd:
+                hits += 1
+                if hits >= 6:
+                    return
+            else:
+                hits = 0
+            last_hwnd = hwnd
+        time.sleep(0.5)
+
+
 def start_exe(slug: str) -> str:
     g = GAMES[slug]
     exe = g.get("exe")
@@ -72,6 +192,7 @@ def start_exe(slug: str) -> str:
         try:
             flags = subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0
             RUNNING[slug] = subprocess.Popen([exe], cwd=str(Path(exe).parent), creationflags=flags)
+            threading.Thread(target=bring_to_front, args=(RUNNING[slug],), daemon=True).start()
         except OSError as e:
             return f"Start fehlgeschlagen: {e}"
     return "ok"
