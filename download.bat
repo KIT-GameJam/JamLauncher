@@ -6,10 +6,12 @@ REM "native" = Uploads ohne Plattform-Tag (werden oft vergessen), prepare.py sor
 cd /d "%~dp0"
 set /p JAM=Jam-URL (z.B. https://itch.io/jam/datteljam): 
 set /p KEY=itch.io API-Key: 
+set PAR=4
+set /p PAR=Parallele Downloads [4]: 
 if not exist downloads mkdir downloads
 REM Jam-URL merken, damit prepare.py den Jam-Namen fuer den Launcher ermitteln kann
 echo %JAM%> downloads\jam.txt
-itch-dl "%JAM%" --api-key %KEY% --download-to downloads --filter-files-platform windows native
+itch-dl "%JAM%" --api-key %KEY% --download-to downloads --filter-files-platform windows native --parallel %PAR%
 echo.
 echo Fertig. Jetzt: python prepare.py --input downloads --output games
 pause

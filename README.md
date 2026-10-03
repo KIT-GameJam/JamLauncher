@@ -9,8 +9,8 @@ Lädt alle Einträge einer itch.io-Jam, bereitet Windows- und Web-Builds auf und
 - Chrome oder Edge (für den Kiosk-Modus)
 
 ## Ablauf
-1. **Herunterladen** – `download.bat` doppelklicken (fragt Jam-URL und API-Key ab), oder direkt:
-   `itch-dl https://itch.io/jam/<slug> --api-key <KEY> --download-to downloads`
+1. **Herunterladen** – `download.bat` doppelklicken (fragt Jam-URL, API-Key und Anzahl paralleler Downloads ab), oder direkt:
+   `itch-dl https://itch.io/jam/<slug> --api-key <KEY> --download-to downloads --parallel 4`
    Falls `--download-to` bei deiner Version anders heißt: `itch-dl --help`.
 2. **Aufbereiten** – `python prepare.py --input downloads --output games`
    Entpackt Zips, findet .exe / index.html, entfernt Mark of the Web, schreibt `games/games.json`.
