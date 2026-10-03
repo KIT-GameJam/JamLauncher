@@ -32,15 +32,33 @@ mimetypes.add_type("application/octet-stream", ".data")
 
 GAMES: dict = {}
 JAM_TITLE = "Game Jam"
+JAM_URL = ""
 RUNNING: dict[str, subprocess.Popen] = {}
 LOCK = threading.Lock()
+SERVER = None
+# Wird beim Beenden über das X in der Oberfläche aufgerufen (z.B. um den Kiosk-Browser zu schließen)
+QUIT_HOOKS: list = []
+
+
+def quit_launcher():
+    """Alle Spiele beenden, Hooks ausführen, Server stoppen."""
+    for slug in list(RUNNING):
+        stop_exe(slug)
+    for hook in QUIT_HOOKS:
+        try:
+            hook()
+        except Exception as ex:
+            print(f"Quit-Hook fehlgeschlagen: {ex}")
+    if SERVER is not None:
+        threading.Thread(target=SERVER.shutdown, daemon=True).start()
 
 
 def load_games(folder: Path):
-    global GAMES, JAM_TITLE
+    global GAMES, JAM_TITLE, JAM_URL
     with open(folder / "games.json", encoding="utf-8") as f:
         data = json.load(f)
     JAM_TITLE = data.get("jam") or JAM_TITLE
+    JAM_URL = data.get("jam_url") or ""
     GAMES = {g["slug"]: g for g in data["games"]}
 
 
@@ -263,9 +281,9 @@ class Handler(BaseHTTPRequestHandler):
         parts = [unquote(p) for p in url.path.strip("/").split("/") if p]
 
         if not parts:
-            return self._send(INDEX_HTML.replace("{{JAM}}", JAM_TITLE))
+            return self._send(INDEX_HTML.replace("{{JAM}}", JAM_TITLE).replace("{{JAM_URL}}", JAM_URL))
         if parts == ["games.json"]:
-            return self._json({"jam": JAM_TITLE, "games": public_games()})
+            return self._json({"jam": JAM_TITLE, "jam_url": JAM_URL, "games": public_games()})
         if parts == ["status"]:
             return self._json({"running": running_slugs()})
 
@@ -302,6 +320,10 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         parts = [unquote(p) for p in urlparse(self.path).path.strip("/").split("/") if p]
+        if parts == ["quit"]:
+            self._json({"result": "beendet"})
+            quit_launcher()
+            return
         if len(parts) == 2 and parts[1] in GAMES:
             if parts[0] == "launch":
                 return self._json({"result": start_exe(parts[1])})
@@ -342,6 +364,18 @@ INDEX_HTML = r"""<!doctype html>
   header h1 span { color: var(--teal); }
   header p { margin: 0; color: var(--ink-soft); font-size: 18px; }
   header .count { color: var(--ink); }
+  .ext { color: var(--ink-soft); text-decoration: none; font-size: 14px; opacity: .7; white-space: nowrap; }
+  .ext:hover, .ext:focus-visible { opacity: 1; color: var(--teal); text-decoration: underline; outline: none; }
+  header .title { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; }
+  .card .team { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .card .team .ext { font-size: 13px; }
+  header .meta { display: flex; align-items: center; gap: 20px; }
+  .quit { width: 44px; height: 44px; padding: 0; border-radius: 50%; border: 1px solid var(--teal-soft);
+    background: var(--bg-raised); color: var(--ink-soft); cursor: pointer;
+    display: inline-flex; align-items: center; justify-content: center; }
+  .quit svg { width: 18px; height: 18px; display: block; }
+  .quit:hover, .quit:focus-visible { color: var(--ink); border-color: var(--teal); outline: none; }
+  .bye { display: grid; place-items: center; min-height: 60vh; font-size: 24px; color: var(--ink-soft); }
 
   .search { margin-bottom: 28px; }
   .search input { width: min(420px, 100%); padding: 12px 16px; font: inherit; font-size: 18px;
@@ -360,6 +394,7 @@ INDEX_HTML = r"""<!doctype html>
   .card .body { padding: 18px 20px 20px; display: flex; flex-direction: column; gap: 6px; flex: 1; }
   .card h2 { margin: 0; font-size: 24px; line-height: 1.15; letter-spacing: -0.01em; }
   .card .team { color: var(--ink-soft); font-size: 16px; }
+  .card .team .who { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
   .card .desc { color: var(--ink-soft); font-size: 15px; line-height: 1.45; margin-top: 4px;
     display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; }
   .card .actions { margin-top: auto; padding-top: 16px; display: flex; gap: 10px; flex-wrap: wrap; }
@@ -388,8 +423,14 @@ INDEX_HTML = r"""<!doctype html>
 </head>
 <body>
 <header>
-  <h1>🌴 <span>{{JAM}}</span> Spiele</h1>
-  <p><span class="count" id="count">…</span> Einreichungen</p>
+  <div class="title">
+    <h1><span>{{JAM}}</span> Spiele</h1>
+    <a class="ext" id="jamlink" href="{{JAM_URL}}" target="_blank" rel="noopener">auf itch.io ↗</a>
+  </div>
+  <div class="meta">
+    <p><span class="count" id="count">…</span> Einreichungen</p>
+    <button class="quit" id="quit" type="button" title="Launcher beenden" aria-label="Launcher beenden"><svg viewBox="0 0 18 18" aria-hidden="true"><path d="M3 3l12 12M15 3L3 15" stroke="currentColor" stroke-width="2" stroke-linecap="round" fill="none"/></svg></button>
+  </div>
 </header>
 <div class="search"><input id="q" type="search" placeholder="Spiel oder Team suchen" autocomplete="off"></div>
 <div class="grid" id="grid"></div>
@@ -398,6 +439,7 @@ INDEX_HTML = r"""<!doctype html>
 
 <script>
 let games = [], running = new Set(), sel = 0, filtered = [];
+{ const jl = document.getElementById('jamlink'); if (!jl.getAttribute('href')) jl.remove(); }
 
 function esc(s){ return String(s ?? "").replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
 function toast(msg){ const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show'); clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2200); }
@@ -424,7 +466,7 @@ function render(){
       <div class="cover" ${cover}>${g.cover ? '' : '🎮'}</div>
       <div class="body">
         <h2>${esc(g.title)}</h2>
-        <div class="team">${esc(g.authors)}</div>
+        <div class="team"><span class="who">${esc(g.authors)}</span>${g.url ? `<a class="ext" href="${esc(g.url)}" target="_blank" rel="noopener" title="Auf itch.io öffnen">itch.io ↗</a>` : ''}</div>
         <div>${g.hasExe ? '<span class="pill">Windows</span>' : ''}${g.hasWeb ? '<span class="pill">Web</span>' : ''}${isRun ? '<span class="pill" style="background:var(--pink)">läuft</span>' : ''}</div>
         <div class="desc">${esc(g.description)}</div>
         <div class="actions">${isRun ? stop : primaryBtn}${secondary}</div>
@@ -447,10 +489,18 @@ async function refresh(){
 }
 
 document.getElementById('grid').addEventListener('click', e => {
+  if (e.target.closest('a.ext')) return;
   const b = e.target.closest('button[data-act]'); if (b) { act(b.dataset.act, b.dataset.slug); return; }
   const c = e.target.closest('.card'); if (c) { sel = +c.dataset.i; render(); }
 });
 document.getElementById('q').addEventListener('input', () => { sel = 0; render(); });
+
+document.getElementById('quit').addEventListener('click', async () => {
+  if (!confirm('Launcher wirklich beenden?')) return;
+  try { await fetch('/quit', { method: 'POST' }); } catch (_) {}
+  document.body.innerHTML = '<div class="bye">Launcher beendet. Dieses Fenster kann geschlossen werden.</div>';
+  setTimeout(() => window.close(), 300);
+});
 
 document.addEventListener('keydown', e => {
   if (e.target.tagName === 'INPUT' && !['ArrowDown','ArrowUp','Enter','Escape'].includes(e.key)) return;
@@ -506,6 +556,13 @@ PLAY_HTML = r"""<!doctype html>
 
 
 def main():
+    # Emoji im Jam-Titel auch bei umgeleiteter Konsolenausgabe nicht abstürzen lassen
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(errors="replace")
+            except Exception:
+                pass
     ap = argparse.ArgumentParser(description="Lokaler Jam-Launcher")
     ap.add_argument("--games", default="games", help="Ordner mit games.json (von prepare.py)")
     ap.add_argument("--port", type=int, default=8000)
@@ -517,7 +574,9 @@ def main():
         sys.exit(f"{folder / 'games.json'} fehlt – erst prepare.py ausführen.")
     load_games(folder)
 
+    global SERVER
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), Handler)
+    SERVER = srv
     url = f"http://localhost:{args.port}/"
     print(f"{JAM_TITLE}: {len(GAMES)} Spiele geladen. Launcher läuft auf {url}  (Strg+C beendet)")
     if not args.no_browser:

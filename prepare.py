@@ -327,6 +327,8 @@ def main():
     out_root.mkdir(parents=True, exist_ok=True)
 
     jam_title = detect_jam_title(in_root, args.jam_title)
+    jam_file = in_root / "jam.txt"
+    jam_url = jam_file.read_text(encoding="utf-8", errors="replace").strip() if jam_file.is_file() else ""
     print(f"Jam: {jam_title}")
 
     # Jeder Ordner mit metadata.json ist ein Spiel; ohne Metadaten gilt jeder Ordner mit Zip/Exe
@@ -347,7 +349,7 @@ def main():
             print(f"  !! Fehler bei {gd}: {ex}")
 
     games.sort(key=lambda g: g["title"].lower())
-    data = {"jam": jam_title, "games": games}
+    data = {"jam": jam_title, "jam_url": jam_url, "games": games}
     with open(out_root / "games.json", "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
 
